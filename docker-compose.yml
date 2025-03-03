@@ -1,0 +1,33 @@
+version: '3.9'
+
+services:
+    db:
+        image: postgres
+        container_name: antipodpiska
+        ports:
+            - 5433:5433
+        volumes:
+            - ./pg_data:/var/lib/postgresql/data
+        environment: 
+            POSTGRES_PASSWORD: 258963
+            POSTGRES_USER: antipodpiska
+            POSTGRES_DB: antipodpiska
+            PGDATA: /var/lib/postgresql/data
+        restart: always
+
+    app:
+        # image:
+        build: .
+        container_name: antipodpiska_app
+        ports: 
+            - 5000:5000
+        env_file:
+            - ".env"
+        depends_on: 
+            - db
+        command: python app.py
+        restart: always
+        links:
+            - db
+        volumes:
+            - .:/src

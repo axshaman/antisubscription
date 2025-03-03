@@ -1,0 +1,10 @@
+# app:
+#   dataSource:
+#     postgres:
+#     port: 5432
+#     username: antipodpiska
+#     password: 258963
+#     host: localhost
+#     databaseName: antipodpiska
+    # THIS IS BRIDGE TO DATABASE FROM JAVA
+    # jdbc-url: jdbc:postgresql://${app.dataSource.postgres.host}:${app.dataSource.postgres.port}/${app.dataSource.postgres.databaseName}

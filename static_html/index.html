@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+ <head>
+ <title>Antipodpiska сканер платных подписок на основе обработки email.</title>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
+ <link href='https://fonts.googleapis.com/css?family=Lato:300,400,700' rel='stylesheet' type='text/css'>
+ <link href='https://bootstraptema.ru/snippets/form/2017/recaptcha/custom.css' rel='stylesheet' type='text/css'>
+ </head>
+ <body>
+
+ <div class="container">
+
+ <div class="row">
+
+ <div class="col-lg-8 col-lg-offset-2">
+
+ <h1 class="text-center">Антиподписка-сканер по Email.</h1>
+
+ <p class="lead">Автоматическое сканирование электронной почты на предмет платных подписных сервисов (уведоления о платной подписке и периодических списаниях). Обработка электронной почты.</p>
+
+
+ <form id="request-form" method="post" role="form">
+
+ <div class="messages"></div>
+
+ <div class="controls">
+
+ <div class="row">
+ <div class="col-md-6">
+ <div class="form-group">
+ <label for="form_login">Login * (аккаунт для доступа в электронную почту)</label>
+ <input id="form_login" type="text" name="login" class="form-control" placeholder="Please enter your Login *" required="required" data-error="Firstname is required.">
+ <div class="help-block with-errors"></div>
+ </div>
+ </div>
+ <div class="col-md-6">
+ <div class="form-group">
+ <label for="form_password">Password * (пароль для доступа в электронную почту)</label>
+ <input id="form_password" type="password" name="password" class="form-control" placeholder="Please enter your Password *" required="required" data-error="Lastname is required.">
+ <div class="help-block with-errors"></div>
+ </div>
+ </div>
+ </div>
+
+ <div class="row">
+
+ <div class="col-md-6">
+ <div class="form-group">
+
+  <label for="form_email">Email Service * (Почтовая служба)</label>
+  <div class="dropdown">
+    <button class="btn btn-secondary dropdown-toggle" type="button" id="dropdownMenu2" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+      Выберите почтовый сервис
+    </button>
+    <div class="dropdown-menu" aria-labelledby="dropdownMenu2">
+      <button class="dropdown-item" type="button">Yandex</button>
+      <button class="dropdown-item" type="button">Gmail</button>
+      <button class="dropdown-item" type="button">Mail.ru</button>
+    </div>
+  </div>
+
+
+ <!-- <label for="form_email">Email Service * (Почтовая служба)</label> -->
+ <!-- <input id="form_email" type="text" name="email" class="form-control" value="Yandex email" required="required" data-error="Valid email is required." readonly> -->
+ <!-- <input id="form_email" type="text" name="email" class="form-control" placeholder="Please enter your email *" required="required" data-error="Valid email is required."> -->
+ <div class="help-block with-errors"></div>
+ </div>
+ </div>
+
+
+
+ <div class="col-md-6">
+ <div class="form-group">
+ <label for="form_keywords">Key words (ключевые слова запроса)</label>
+ <input id="form_keywords" type="text" name="keywords" value="subscription signed unsubscribe подписка отписаться подписались" class="form-control" placeholder="Please enter your key words">
+ <div class="help-block with-errors"></div>
+ </div>
+ </div>
+ </div>
+
+ 
+
+ <table class="table table-striped">
+  <thead>
+    <tr>
+      <th scope="col">#</th>
+      <th scope="col">Last Send Date</th>
+      <th scope="col">Sender of Subscription</th>
+      <th scope="col">Periods (numbers of mails)</th>
+    </tr>
+  </thead>
+  <tbody id="periods">
+    
+  </tbody>
+  </table>
+
+ <table class="table table-striped">
+    <thead>
+      <tr>
+        <th scope="col">#</th>
+        <th scope="col">Send Date</th>
+        <th scope="col">Sender</th>
+        <th scope="col">Subscription references</th>
+      </tr>
+    </thead>
+    <tbody id="data">
+      
+    </tbody>
+  </table>
+
+ <!-- <div class="col-md-12">
+ <div class="form-group"> -->
+ <!-- Replace data-sitekey with your own one, generated at https://www.google.com/recaptcha/admin -->
+ <!-- <div class="g-recaptcha" data-sitekey="6LfKURIUAAAAAO50vlwWZkyK_G2ywqE52NU7YO0S"></div>
+ </div>
+ </div> -->
+
+ <div class="col-md-12">
+ <input type="submit" class="btn btn-success btn-send" value="Проверить почту" hidden='true'>
+ &nbsp;&nbsp;&nbsp;&nbsp;
+ <input type="submit" class="btn btn-send" value="Показать результат проверки" >
+ <!-- <input type="submit" class="btn btn-send" value="Показать результат проверки" disabled> -->
+ </div>
+
+ </div>
+
+ </div>
+
+ </form>
+
+ </div><!-- /.col-lg-8 col-lg-offset-2 -->
+
+ </div> <!-- /.row-->
+
+ </div> <!-- /.container-->
+
+ <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+ <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+ <script src='https://www.google.com/recaptcha/api.js'></script>
+ <script src="https://bootstraptema.ru/snippets/form/2017/recaptcha/validator.js"></script>
+ <script src="https://bootstraptema.ru/snippets/form/2017/recaptcha/contact.js"></script>
+ <!-- <script src="script.js"></script> -->
+ <script src="{{url_for('static', filename='script.js')}}"></script>
+ </body>
+</html>

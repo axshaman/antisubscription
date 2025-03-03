@@ -1,0 +1,6 @@
+mail_venv/
+.env
+__pycache__
+libs/__pycache__/
+
+pg_data/
