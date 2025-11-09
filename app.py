@@ -1,250 +1,293 @@
-import psycopg2.extras
-from datetime import timedelta
+"""Flask entry point for the Antisubscription API."""
 
+from __future__ import annotations
 
 import os
-from flask import Flask, render_template, jsonify, request, redirect, url_for
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import create_engine, text
-# =================================================================================
-# from flask_cors import CORS #comment this on deployment
-# =================================================================================
+from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Sequence
 
+import dateparser
+from flask import Flask, jsonify, render_template, request
+from psycopg2.extras import RealDictCursor
 
-import config as config
-from config import PG_LOGIN, PG_PASSWORD
+import config
 from app_yandex import get_data
+from connect_db import get_connection
 
-# # __init__.py
+
 APP_DIR = os.path.abspath(os.path.dirname(__file__))
-STATIC_FOLDER = os.path.join(APP_DIR, 'static_html/js/') # Where your webpack build output folder is
-TEMPLATE_FOLDER = os.path.join(APP_DIR, 'static_html/') # Where your index.html file is located
+STATIC_FOLDER = os.path.join(APP_DIR, "static_html/js/")
+TEMPLATE_FOLDER = os.path.join(APP_DIR, "static_html/")
 
-
-# from models import Sender
-
-
-
-# BASE Connection
-# try:
-#     engine = create_engine(
-#         f'postgresql://{PG_LOGIN}:{PG_PASSWORD}@db:5432/antipodpiska')                    # Production
-#         # f'postgresql://{PG_LOGIN}:{PG_PASSWORD}@localhost:5432/antipodpiska')           # Development
-#     print('engine: ', engine)
-# except:
-#     print("Can't create 'engine")
-
-
+MIN_PERIOD_DAYS = 22
 
 
 app = Flask(__name__, static_folder=STATIC_FOLDER, template_folder=TEMPLATE_FOLDER)
-# app = Flask(__name__)
-# =================================================================================
-# CORS(app) #comment this on deployment
-# =================================================================================
 app.config.from_object(config)
-db = SQLAlchemy(app)
-# from models import *
 
 
+def _parse_keywords(payload: Dict[str, Any]) -> List[str]:
+    """Extract a normalised list of keywords from the request payload."""
+
+    keywords = payload.get("keywords") or payload.get("keyWords") or []
+    if isinstance(keywords, str):
+        return [value for value in keywords.split() if value]
+    if isinstance(keywords, Sequence):
+        return [str(value).strip() for value in keywords if str(value).strip()]
+    return []
 
 
+def _parse_date(value: str | None) -> datetime | None:
+    """Parse an ISO or natural language date string."""
 
-@app.route('/', methods=['GET'])
-def index():
-    
-    # We use 'sqlalchemy' to get data from DB
-    # with engine.connect() as connection:
-    #     result = connection.execute(text("SELECT * from public.anti;"))
-    #     # result = connection.execute(text("SELECT sender from public.anti;"))
-    #     result_dict = {}
-    #     c = 1
-    #     for row in result:
-    #         # print(row)
-    #         # print("sender:", row['sender'])
-    #         dict_key = {}
-    #         dict_key["sender"] = row['email']
-    #         dict_key["Subscription"] = row['subscription']
-    #         c += 1
-    #         result_dict[c] = dict_key
-   
-    # return jsonify({
-    #      'sender': [p.to_dict() for p in senders],
-    #  })
-        # print(result_dict)
-    # return jsonify(result_dict)
-    return render_template('index.html')
+    if not value:
+        return None
+    parsed = dateparser.parse(value)
+    if not parsed:
+        raise ValueError(f"Unable to parse date: {value}")
+    return parsed
 
-@app.route('/account', methods=['POST'])
-def post():
-    data = request.get_json()
-    mail_service = data['mail_service']
-    login = data['login']
-    password = data['password']
-    keys_list = data['keyWords']
-    keys_list = keys_list.split()
 
-    
-    # from sqlalchemy_engine.account import mail_service, login, password
-    get_data(mail_service, login, password, keys_list)                      # Push this data to app_yandex
+def fetch_subscriptions(
+    *,
+    recipient: str | None = None,
+    sender: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    limit: int | None = None,
+) -> List[Dict[str, Any]]:
+    """Query subscription records from the database."""
 
-    
+    clauses = ["subscription > 0"]
+    params: List[Any] = []
+
+    if recipient:
+        clauses.append("recipient = %s")
+        params.append(recipient)
+    if sender:
+        clauses.append("email = %s")
+        params.append(sender)
+    if start_date:
+        clauses.append("send_date >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append("send_date <= %s")
+        params.append(end_date)
+
+    where_clause = " AND ".join(clauses)
+    query = (
+        "SELECT sender, email, recipient, send_date, subscription "
+        "FROM public.anti WHERE "
+        f"{where_clause} ORDER BY send_date DESC"
+    )
+
+    if limit:
+        query += " LIMIT %s"
+        params.append(limit)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(query, params)
+            records = cursor.fetchall()
+
+    return [
+        {
+            "sender": record["sender"],
+            "email": record["email"],
+            "recipient": record["recipient"],
+            "send_date": record["send_date"].isoformat(),
+            "subscription": record["subscription"],
+        }
+        for record in records
+    ]
+
+
+def summarize_subscriptions(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return aggregated statistics for the provided records."""
+
+    summary: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        key = record["email"]
+        send_date = (
+            dateparser.parse(record["send_date"]) if isinstance(record["send_date"], str) else record["send_date"]
+        )
+        if key not in summary:
+            summary[key] = {
+                "email": key,
+                "sender": record.get("sender"),
+                "count": 0,
+                "recipients": set(),
+                "last_seen": send_date,
+            }
+        summary[key]["count"] += 1
+        summary[key]["recipients"].add(record["recipient"])
+        if send_date and (not summary[key]["last_seen"] or send_date > summary[key]["last_seen"]):
+            summary[key]["last_seen"] = send_date
+
+    formatted: List[Dict[str, Any]] = []
+    for item in summary.values():
+        formatted.append(
+            {
+                "email": item["email"],
+                "sender": item["sender"],
+                "count": item["count"],
+                "recipients": sorted(item["recipients"]),
+                "last_seen": item["last_seen"].isoformat() if item["last_seen"] else None,
+            }
+        )
+
+    formatted.sort(key=lambda entry: entry["count"], reverse=True)
+    return formatted
+
+
+def detect_periodic_senders(
+    records: Iterable[Dict[str, Any]],
+    *,
+    min_gap_days: int = MIN_PERIOD_DAYS,
+    min_events: int = 2,
+) -> List[Dict[str, Any]]:
+    """Identify senders that contact the recipient on a recurring basis."""
+
+    grouped: Dict[str, List[datetime]] = defaultdict(list)
+    for record in records:
+        send_date = record["send_date"]
+        parsed = dateparser.parse(send_date) if isinstance(send_date, str) else send_date
+        if parsed:
+            grouped[record["email"]].append(parsed)
+
+    periodic_senders: List[Dict[str, Any]] = []
+    for email, dates in grouped.items():
+        if len(dates) < min_events:
+            continue
+        dates.sort(reverse=True)
+        gaps = [
+            (dates[index - 1] - current).days
+            for index, current in enumerate(dates[1:], start=1)
+        ]
+        qualifying_gaps = [gap for gap in gaps if gap >= min_gap_days]
+        if not qualifying_gaps:
+            continue
+        periodic_senders.append(
+            {
+                "email": email,
+                "occurrences": len(dates),
+                "largest_gap_days": max(qualifying_gaps),
+                "last_seen": dates[0].isoformat(),
+            }
+        )
+
+    periodic_senders.sort(key=lambda item: item["occurrences"], reverse=True)
+    return periodic_senders
+
+
+@app.route("/", methods=["GET"])
+def index() -> str:
+    """Return the static dashboard entry point."""
+
+    return render_template("index.html")
+
+
+@app.route("/health", methods=["GET"])
+def health() -> Any:
+    """Simple health check endpoint used by monitoring probes."""
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/account", methods=["POST"])
+def register_account() -> Any:
+    """Trigger mailbox synchronisation for a given account."""
+
+    payload = request.get_json(force=True)
+    keywords = _parse_keywords(payload)
+
+    lookback_days = int(payload.get("lookback_days", 730))
+    max_messages = payload.get("max_messages")
+    max_messages = int(max_messages) if max_messages is not None else None
+
+    stored_messages = get_data(
+        payload["mail_service"],
+        payload["login"],
+        payload["password"],
+        keywords,
+        lookback_days=lookback_days,
+        max_messages=max_messages,
+    )
+
+    return jsonify({"status": "ok", "stored_messages": stored_messages}), 200
+
+
+@app.route("/subscriptions", methods=["GET"])
+def list_subscriptions() -> Any:
+    """Return stored subscription e-mails with optional filtering."""
+
+    recipient = request.args.get("recipient")
+    sender = request.args.get("sender")
+    try:
+        start = _parse_date(request.args.get("start"))
+        end = _parse_date(request.args.get("end"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    limit = request.args.get("limit")
+    limit_value = int(limit) if limit else None
+
+    records = fetch_subscriptions(
+        recipient=recipient,
+        sender=sender,
+        start_date=start,
+        end_date=end,
+        limit=limit_value,
+    )
+
+    return jsonify({"records": records})
+
+
+@app.route("/subscriptions/summary", methods=["GET"])
+def subscription_summary() -> Any:
+    """Return aggregated metrics grouped by sender."""
+
+    records = fetch_subscriptions()
+    return jsonify({"summary": summarize_subscriptions(records)})
+
+
+@app.route("/subscriptions/periodic", methods=["GET"])
+def periodic_subscriptions() -> Any:
+    """Return senders that contacted the recipient on a predictable schedule."""
 
     try:
-        # user = User(**data)
-        # user.save_to_db()
-        return {'status': 'ok'}, 200
-    except:
-        return {'status': 'fail'}, 400
+        min_gap_days = int(request.args.get("min_gap_days", MIN_PERIOD_DAYS))
+        min_events = int(request.args.get("min_events", 2))
+    except ValueError:
+        return jsonify({"error": "min_gap_days and min_events must be integers"}), 400
+    recipient = request.args.get("recipient")
 
-
-# @app.route('/check', methods=['GET'])
-# def execute_SQL():
-    # We use 'sqlalchemy' to get data from DB
-    # with engine.connect() as connection:
-    #     connection.execute(text("DELETE FROM public.anti WHERE ctid NOT IN (SELECT max(ctid) FROM public.anti GROUP BY public.anti.*);"))
-    #     result = connection.execute(text("SELECT * from public.anti;"))
-
-        # result = connection.execute(text("SELECT sender from public.anti;"))
-        
-        #  USE THIS OR ARRAY
-        # ------------ Logic for Dict ---------------
-        # result_dict = {}
-        # c = 0
-        # for row in result:
-        #     dict_key = {}
-        #     dict_key["sender"] = row['email']
-        #     dict_key["Subscription"] = row['subscription']
-        #     c += 1
-        #     result_dict[c] = dict_key
-    # return result_dict
-        
-        #  USE THIS OR DICT
-        # --------------- Logic for Array ----------------
-    #     result_list = []
-    #     for row in result:
-    #         dict_key = {}
-    #         dict_key["Send Date"] = row['send_date']
-    #         dict_key["sender"] = row['email']
-    #         dict_key["Subscription"] = row['subscription']
-    #         # dict_key["Recipient"] = row['recipient']
-    #         result_list.append(dict_key)
-       
-    # return jsonify(result_list)
-
-
-TWONY_TWO_DAYS = timedelta(22)
-
-@app.route('/senders', methods=['GET'])
-def get_latest_sender():
-
-        user = request.args.get('login')
-
-        try:
-            conn = psycopg2.connect(
-                user = PG_LOGIN,
-                password = PG_PASSWORD,                           
-                database = 'antipodpiska',
-                host = 'db',                                # Production
-                # host = 'localhost',                       # Development
-                port = 5432,
+    records = fetch_subscriptions(recipient=recipient)
+    return jsonify(
+        {
+            "periodic_senders": detect_periodic_senders(
+                records, min_gap_days=min_gap_days, min_events=min_events
             )
-        except Exception as ex:
-            print(' /// ----- I am unable to connect to the database ----- ///', ex)
-            raise ex
-
-       
-        # cur = conn.cursor()
-        cur = conn.cursor(cursor_factory = psycopg2.extras.RealDictCursor)
-
-        # cur.execute('DELETE FROM public.anti;')
-        
-        # This sql delete all equal rows!
-        cur.execute("DELETE FROM public.anti WHERE ctid NOT IN (SELECT max(ctid) FROM public.anti GROUP BY public.anti.*);")
-        cur.execute(
-        f"""
-        SELECT send_date, email, subscription, recipient from public.anti WHERE subscription > 0 AND recipient='{user}';
-        """
-        )
-        result = cur.fetchall()
-
-        result_list_total_data : list = []
-        result_list : list = []
-        result_list_periods : list = []
-        for row in result:
-            dict_key = {}
-            dict_key["Send Date"] = row['send_date']
-            dict_key["sender"] = row["email"]
-            dict_key["Subscription"] = row["subscription"]
-            dict_key["Recipient"] = row['recipient']
-            result_list.append(dict_key)
+        }
+    )
 
 
-        #   =============================================
-        #   ====== Объеденяем даты по получателям =======
-        #   =============================================
-        # Словарь с отправителями из БД
-        senders_periods_dict : dict = {}
-   
-        # Каждый словарь массива отправителей
-        
-        for each_sender in range(len(result_list)):
-            # print(result_list[each_sender])
-            senders_periods_dict[result_list[each_sender]['sender']] = [[]]
+@app.route("/senders", methods=["GET"])
+def legacy_senders_endpoint() -> Any:
+    """Backwards compatible version of the original `/senders` endpoint."""
 
-        # Если ключ в senders_periods_dict равен значению sender в dict_key,
-        # то поместить значение даты в массив значений senders_periods_dict
-        for key, dates in sorted(senders_periods_dict.items()):
-            for each_dict in range(len(result_list)):
-                for each_sender in dates:
-                    if key == result_list[each_dict]['sender']:
-                        each_sender.append(result_list[each_dict]['Send Date'])
+    recipient = request.args.get("login")
+    try:
+        min_gap_days = int(request.args.get("min_gap_days", MIN_PERIOD_DAYS))
+        min_events = int(request.args.get("min_events", 2))
+    except ValueError:
+        return jsonify({"error": "min_gap_days and min_events must be integers"}), 400
 
-     
-        # print('===================')
-        # Проверка на периодичность
-        quantity_of_periods = 0
-        for k,v in senders_periods_dict.items():
-            list_of_dates = v[0]
-            
-            if len((v[0])) > 1:
-                if list_of_dates[0] - list_of_dates[1] > TWONY_TWO_DAYS:
-                    periods_dict_key = {}
-                    periods_dict_key['Sender of Subscription'] = k
-                    periods_dict_key['Last Send Date'] = list_of_dates[0]
-                    periods_dict_key['Periods'] = len(list_of_dates)
-                    quantity_of_periods += 1
-                    result_list_periods.append(periods_dict_key)
-                else:
-                    pass
-    
-        
-        #   ========================================
-        #   ====== Даты по получателям конец =======
-        #   ========================================
+    records = fetch_subscriptions(recipient=recipient)
+    periodic = detect_periodic_senders(records, min_gap_days=min_gap_days, min_events=min_events)
 
-        result_list_total_data.append(result_list)
-        result_list_total_data.append(result_list_periods)
+    return jsonify({"records": records, "periodic_senders": periodic})
 
 
-
-
-
-        cur.close()
-        conn.close()
-
-        # return jsonify(result_list)
-        return jsonify(result_list_total_data)
-
-
-
-if __name__ == '__main__':
-    # from models import *
-    # db.create_all()
-
-    # senders = Sender.query.all()
-    # print(list(map(str, senders)))
-
-    app.run(port=5000, host='0.0.0.0')
-    # app.run(host='34.141.12.119', port=5000 )
-
+if __name__ == "__main__":
+    app.run(port=5000, host="0.0.0.0")
