@@ -1,75 +1,66 @@
-import psycopg2
-import datetime
-# from account import user_login, user_pass
-from config import PG_LOGIN, PG_PASSWORD
+"""Database helper functions."""
 
-def add_to_base(dict_my):
-    
-    # id = dict_my['Id']
-    sender = dict_my['Sender']
-    email = dict_my['Email']
-    send_date = dict_my['Date']
-    recipient = dict_my['Recipient']
-    subscription = dict_my['Subscription']
+from __future__ import annotations
+
+import datetime as dt
+from contextlib import contextmanager
+from typing import Dict, Generator
+
+import psycopg2
+from psycopg2.extras import execute_values
+
+from config import PG_DATABASE, PG_HOST, PG_LOGIN, PG_PASSWORD, PG_PORT
+
+
+@contextmanager
+def get_connection() -> Generator[psycopg2.extensions.connection, None, None]:
+    """Return a PostgreSQL connection with automatic cleanup."""
+
+    if not PG_LOGIN or not PG_PASSWORD:
+        raise RuntimeError(
+            "Database credentials are missing. Set 'user_login' and 'user_pass' "
+            "environment variables or populate the .env file."
+        )
+
+    conn = psycopg2.connect(
+        user=PG_LOGIN,
+        password=PG_PASSWORD,
+        database=PG_DATABASE,
+        host=PG_HOST,
+        port=PG_PORT,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def add_to_base(message: Dict[str, str]) -> None:
+    """Persist a message dictionary to the ``public.anti`` table."""
 
     fmt = "%Y %m %d"
-    send_date = datetime.datetime.strptime(send_date, fmt)
+    send_date = dt.datetime.strptime(message["Date"], fmt)
 
-    try:
-        conn = psycopg2.connect(
-            user = PG_LOGIN,
-            password = PG_PASSWORD,                           
-            database = 'antipodpiska',
-            host = 'db',                                            # Production
-            # host = 'localhost',                                   # Development
-            port = 5432,
+    # psycopg2 does not support named parameters when used with execute_values,
+    # therefore the payload is converted to an ordered tuple.
+    values = [
+        (
+            message["Sender"],
+            message["Email"],
+            send_date,
+            message["Recipient"],
+            message["Subscription"],
         )
-    except Exception as ex:
-        print(' /// ----- I am unable to connect to the database ----- ///', ex)
-        raise ex
+    ]
 
-    cur = conn.cursor()
-
-
-# GETTING DATA FROM DB
-    
-    # postgreSQL_select_Query = "SELECT * FROM public.anti;"
-    # cur.execute(postgreSQL_select_Query)
-
-    # print("Selecting rows from mobile table using cursor.fetchall")
-    # mobile_records = cur.fetchall()
-    # print('=============================================================')
-    # print(mobile_records)
-    # print(type(mobile_records))
-    # print('=============================================================')
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                "INSERT INTO public.anti (sender, email, send_date, recipient, subscription) VALUES %s",
+                values,
+            )
+        conn.commit()
 
 
-
-
-    cur.execute( # 'cur' object calls the 'execute' method 
-        """INSERT INTO public.anti(
-            sender, email, send_date, recipient, subscription) VALUES (
-                %(sender)s,
-                %(email)s,
-                %(send_date)s,
-                %(recipient)s,
-                %(subscription)s
-            )""",
-            {
-            'sender' : sender,
-            'email': email,
-            'send_date' : send_date,
-            'recipient' : recipient,
-            'subscription' : subscription
-            }
-    )
-    conn.commit()
-
-    cur.close()
-    conn.close()
-    print('Done ok. 200')
-
-
-if __name__ == '__main__':
-    # add_to_base(id, sender, email, send_date)
-    add_to_base(dict_my)
+__all__ = ["add_to_base", "get_connection"]

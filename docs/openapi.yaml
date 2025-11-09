@@ -1,0 +1,271 @@
+openapi: 3.0.3
+info:
+  title: Antisubscription API
+  version: 1.1.0
+  description: |
+    REST API for the Antisubscription monitoring service. The service ingests
+    subscription related emails from IMAP mailboxes and stores them in
+    PostgreSQL for further analysis.
+servers:
+  - url: http://localhost:5000
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns a status payload that can be used by monitoring tools.
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /account:
+    post:
+      summary: Trigger mailbox synchronisation
+      description: |
+        Connects to an IMAP mailbox using the provided credentials, scans recent
+        emails for subscription related keywords and persists the matches.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountRequest'
+      responses:
+        "200":
+          description: Synchronisation triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        "400":
+          description: Invalid request payload
+  /subscriptions:
+    get:
+      summary: List stored subscription emails
+      parameters:
+        - $ref: '#/components/parameters/RecipientQuery'
+        - $ref: '#/components/parameters/SenderQuery'
+        - $ref: '#/components/parameters/StartQuery'
+        - $ref: '#/components/parameters/EndQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        "200":
+          description: A list of subscription records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubscriptionRecord'
+  /subscriptions/summary:
+    get:
+      summary: Summarise subscriptions by sender
+      responses:
+        "200":
+          description: Aggregated subscription statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubscriptionSummary'
+  /subscriptions/periodic:
+    get:
+      summary: Identify periodic senders
+      parameters:
+        - $ref: '#/components/parameters/RecipientQuery'
+        - name: min_gap_days
+          in: query
+          description: Minimum number of days between events to be considered periodic.
+          schema:
+            type: integer
+            minimum: 1
+            default: 22
+        - name: min_events
+          in: query
+          description: Minimum number of events required to classify a sender as periodic.
+          schema:
+            type: integer
+            minimum: 2
+            default: 2
+      responses:
+        "200":
+          description: Periodic sender report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  periodic_senders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PeriodicSender'
+  /senders:
+    get:
+      summary: Legacy senders endpoint
+      description: Backwards compatible endpoint that returns subscription records and periodic senders.
+      parameters:
+        - name: login
+          in: query
+          description: Recipient email address filter.
+          schema:
+            type: string
+        - name: min_gap_days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 22
+        - name: min_events
+          in: query
+          schema:
+            type: integer
+            minimum: 2
+            default: 2
+      responses:
+        "200":
+          description: Legacy response structure
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubscriptionRecord'
+                  periodic_senders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PeriodicSender'
+components:
+  parameters:
+    RecipientQuery:
+      name: recipient
+      in: query
+      description: Recipient email address filter.
+      schema:
+        type: string
+    SenderQuery:
+      name: sender
+      in: query
+      description: Sender email address filter.
+      schema:
+        type: string
+    StartQuery:
+      name: start
+      in: query
+      description: Only include records sent on or after this date.
+      schema:
+        type: string
+        format: date-time
+    EndQuery:
+      name: end
+      in: query
+      description: Only include records sent on or before this date.
+      schema:
+        type: string
+        format: date-time
+    LimitQuery:
+      name: limit
+      in: query
+      description: Maximum number of records to return.
+      schema:
+        type: integer
+        minimum: 1
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+    AccountRequest:
+      type: object
+      required:
+        - mail_service
+        - login
+        - password
+      properties:
+        mail_service:
+          type: string
+          example: imap.example.com
+        login:
+          type: string
+          example: user@example.com
+        password:
+          type: string
+          format: password
+        keywords:
+          type: array
+          items:
+            type: string
+          example: ["subscription", "invoice", "payment"]
+        keyWords:
+          description: Legacy support for camelCase keyword field.
+          type: string
+        lookback_days:
+          type: integer
+          default: 730
+        max_messages:
+          type: integer
+          nullable: true
+    AccountResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        stored_messages:
+          type: integer
+          description: Number of messages stored during the synchronisation run.
+    SubscriptionRecord:
+      type: object
+      properties:
+        sender:
+          type: string
+        email:
+          type: string
+        recipient:
+          type: string
+        send_date:
+          type: string
+          format: date-time
+        subscription:
+          type: integer
+    SubscriptionSummary:
+      type: object
+      properties:
+        email:
+          type: string
+        sender:
+          type: string
+        count:
+          type: integer
+        recipients:
+          type: array
+          items:
+            type: string
+        last_seen:
+          type: string
+          format: date-time
+    PeriodicSender:
+      type: object
+      properties:
+        email:
+          type: string
+        occurrences:
+          type: integer
+        largest_gap_days:
+          type: integer
+        last_seen:
+          type: string
+          format: date-time

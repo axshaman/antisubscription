@@ -2,20 +2,33 @@
 
 ## Overview
 
-Antisubscription is a Flask-based email monitoring system that detects the appearance of paid subscriptions and recurring payments based on email notifications. The system connects to an email account via IMAP, extracts relevant emails, identifies subscription-related messages, and stores the information in a PostgreSQL database for further analysis.
+Antisubscription is a Flask-based email monitoring system that analyses IMAP
+mailboxes for subscription and recurring payment notifications. Messages that
+match configurable keywords are persisted in PostgreSQL where they can be
+queried through a REST API. The project is intentionally lightweight so that it
+can be deployed locally with Docker Compose or embedded in existing monitoring
+solutions.
 
-The application is designed to help users track new paid subscriptions and analyze recurring payments.
+The latest release modernises the codebase, introduces richer API endpoints and
+provides documentation assets such as an OpenAPI contract and a C4 architecture
+model.
 
 ---
 
 ## Features
 
-- **Email Fetching via IMAP**: Connects to various email services to retrieve messages.
-- **Subscription Detection**: Identifies emails related to paid subscriptions using keyword analysis.
-- **PostgreSQL Storage**: Stores extracted data for further analysis.
-- **Flask API**: Provides RESTful endpoints for querying stored email data.
-- **Docker Support**: Easily deployable using Docker and Docker Compose.
-- **Keyword Matching**: Uses predefined keywords to detect subscription-related emails.
+- **Email Ingestion via IMAP** – Connects to any IMAP compatible provider and
+  scans messages for subscription-related keywords.
+- **Keyword Matching** – Uses configurable keyword lists to determine whether a
+  message is a potential subscription notification.
+- **PostgreSQL Storage** – Persists subscription hints for further analysis.
+- **Flask REST API** – Provides endpoints for listing, aggregating and analysing
+  subscriptions as well as a backwards compatible `/senders` endpoint.
+- **Recurring Sender Detection** – Highlights senders that contact a recipient on
+  a regular schedule.
+- **Docker Support** – Easily deployable with Docker and Docker Compose.
+- **Documentation Assets** – Includes an OpenAPI specification and a C4 model to
+  help newcomers understand the system.
 
 ---
 
@@ -23,29 +36,27 @@ The application is designed to help users track new paid subscriptions and analy
 
 ```
 ├── assets/
-│   ├── anti_table.sql            # SQL script for database setup
+│   └── anti_table.sql            # SQL script for database setup
+├── docs/
+│   ├── architecture/
+│   │   └── c4-model.md           # C4 context + container diagrams
+│   └── openapi.yaml              # HTTP API contract
 ├── libs/
-│   ├── __init__.py               # Package initialization
-│   ├── imaplib.py                # IMAP handling logic
-│   ├── key_values_scan.py        # Keyword analysis for subscriptions
-│   ├── subscription.py           # Subscription detection logic
+│   ├── __init__.py               # Package initialisation
+│   ├── imaplib.py                # Vendored IMAP library (used by app_yandex)
+│   ├── key_values_scan.py        # Legacy keyword helpers
+│   └── subscription.py           # Subscription detection logic
 ├── static_html/
 │   ├── js/                       # JavaScript files
-│   ├── index.html                # Main HTML file
+│   └── index.html                # Main HTML file
 ├── .env.example                  # Example environment variables
-├── .gitignore                    # Git ignore file
-├── app_old_get.py                # Legacy API endpoint (for reference)
-├── app_yandex.py                 # Email fetching logic (Yandex Mail)
-├── app.py                        # Main Flask application
-├── application.yml               # Configuration file (database settings)
-├── config.py                     # Application configuration (environment variables)
-├── connect_db.py                 # Database connection logic
+├── app.py                        # Flask application entry point
+├── app_yandex.py                 # IMAP ingestion helpers
+├── connect_db.py                 # PostgreSQL helpers
 ├── docker-compose.yml            # Docker Compose configuration
 ├── Dockerfile                    # Docker image configuration
-├── models.py                     # Database models
-├── one_mail_ya.py                # Script for fetching a single email (for testing)
-├── README.md                     # Project documentation
-└── requirements.txt               # Project dependencies
+├── requirements.txt              # Project dependencies
+└── README.md                     # Project documentation
 ```
 
 ---
@@ -54,12 +65,13 @@ The application is designed to help users track new paid subscriptions and analy
 
 ### 1. Local Installation (Without Docker)
 
-#### Prerequisites:
-- Python 3.8+
-- PostgreSQL
-- `pip` (Python package manager)
+#### Prerequisites
 
-#### Steps:
+- Python 3.10+
+- PostgreSQL 13+
+- `pip`
+
+#### Steps
 
 1. **Clone the repository**
    ```bash
@@ -67,34 +79,37 @@ The application is designed to help users track new paid subscriptions and analy
    cd antisubscription
    ```
 
-2. **Install dependencies**
+2. **Create and activate a virtual environment (recommended)**
    ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-3. **Set environment variables** (or use a `.env` file)
-   ```bash
-   export mail_service="imap.example.com"
-   export login="your_email@example.com"
-   export password="your_password"
-   export user_login="db_user"
-   export user_pass="db_password"
-   ```
+4. **Configure environment variables**
+   Copy `.env.example` to `.env` and provide the required values or export the
+   variables manually. At minimum the database credentials and IMAP settings
+   must be configured.
 
-4. **Run the application**
+5. **Run the application**
    ```bash
-   python app.py
+   flask --app app run --debug
    ```
-
----
+   The API will be available at `http://localhost:5000`.
 
 ### 2. Running with Docker
 
-#### Prerequisites:
+#### Prerequisites
+
 - Docker
 - Docker Compose
 
-#### Steps:
+#### Steps
 
 1. **Clone the repository**
    ```bash
@@ -102,94 +117,96 @@ The application is designed to help users track new paid subscriptions and analy
    cd antisubscription
    ```
 
-2. **Build and start the containers**
+2. **Provide configuration**
+   Copy `.env.example` to `.env` and adjust credentials if required.
+
+3. **Build and start the containers**
    ```bash
    docker-compose up --build -d
    ```
 
-3. **Check running containers**
+4. **Check running containers**
    ```bash
    docker ps
    ```
 
-4. **Access the Flask API**
-   ```
-   http://localhost:5000
-   ```
-
----
-
-## API Endpoints
-
-### 1. Fetch Subscription Data
-**Endpoint:** `GET /senders`
-
-**Query Parameters:**
-- `login` - Email address of the recipient
-
-**Example Request:**
-```bash
-curl -X GET "http://localhost:5000/senders?login=your_email@example.com"
-```
-
----
-
-### 2. Submit Account Credentials
-**Endpoint:** `POST /account`
-
-**Request Body:**
-```json
-{
-  "mail_service": "imap.example.com",
-  "login": "your_email@example.com",
-  "password": "your_password",
-  "keyWords": "subscribe payment invoice"
-}
-```
-
-**Example Request:**
-```bash
-curl -X POST "http://localhost:5000/account" -H "Content-Type: application/json" -d '{
-  "mail_service": "imap.example.com",
-  "login": "your_email@example.com",
-  "password": "your_password",
-  "keyWords": "subscribe payment invoice"
-}'
-```
+5. **Access the Flask API**
+   Open `http://localhost:5000` in a browser or use your favourite HTTP client.
 
 ---
 
 ## Configuration
 
-### Environment Variables:
-| Variable        | Description                  |
-|----------------|------------------------------|
-| `mail_service` | IMAP server address          |
-| `login`        | Email login                  |
-| `password`     | Email password               |
-| `user_login`   | PostgreSQL username          |
-| `user_pass`    | PostgreSQL password          |
+### Environment Variables
+
+| Variable        | Description                                 | Default             |
+|-----------------|---------------------------------------------|---------------------|
+| `mail_service`  | IMAP server address                         | –                   |
+| `login`         | IMAP login                                  | –                   |
+| `password`      | IMAP password or app-specific token         | –                   |
+| `mail_service_gmail` | Optional Gmail IMAP server             | –                   |
+| `login_gmail`   | Optional Gmail login                        | –                   |
+| `password_gmail`| Optional Gmail password                     | –                   |
+| `user_login`    | PostgreSQL username                         | –                   |
+| `user_pass`     | PostgreSQL password                         | –                   |
+| `pg_host`       | PostgreSQL host                             | `db`                |
+| `pg_port`       | PostgreSQL port                             | `5432`              |
+| `pg_database`   | PostgreSQL database name                    | `antipodpiska`      |
+
+The `.env.example` file contains the variables with sample values. Populate it
+and rename to `.env` for local development.
 
 ---
 
-## Dependencies
+## API Endpoints
 
-The project relies on the following Python libraries:
+The API is documented through `docs/openapi.yaml`. The most commonly used
+endpoints are summarised below:
 
-| Library            | Version |
-|--------------------|---------|
-| Flask             | 2.0.1   |
-| Flask-SQLAlchemy  | 2.5.1   |
-| Flask-Cors        | 3.0.10  |
-| psycopg2-binary   | 2.9.1   |
-| SQLAlchemy        | 1.4.20  |
-| dateparser        | 1.0.0   |
-| python-dotenv     | 0.18.0  |
+### Health Check
+- **Endpoint:** `GET /health`
+- **Description:** Returns a simple status object that can be used by monitoring
+  systems.
 
-To install them manually, run:
-```bash
-pip install -r requirements.txt
-```
+### Trigger Mailbox Synchronisation
+- **Endpoint:** `POST /account`
+- **Body:**
+  ```json
+  {
+    "mail_service": "imap.example.com",
+    "login": "your_email@example.com",
+    "password": "your_password",
+    "keywords": ["subscription", "invoice", "payment"],
+    "lookback_days": 365,
+    "max_messages": 200
+  }
+  ```
+- **Description:** Fetches messages from the specified mailbox and stores
+  subscription matches in the database.
+
+### List Stored Subscriptions
+- **Endpoint:** `GET /subscriptions`
+- **Query Parameters:** `recipient`, `sender`, `start`, `end`, `limit`
+- **Description:** Returns stored subscription events filtered by the provided
+  criteria.
+
+### Summarise Subscriptions
+- **Endpoint:** `GET /subscriptions/summary`
+- **Description:** Aggregates stored events by sender including the number of
+  occurrences and the last time a message was seen.
+
+### Detect Periodic Senders
+- **Endpoint:** `GET /subscriptions/periodic`
+- **Query Parameters:** `recipient`, `min_gap_days`, `min_events`
+- **Description:** Identifies senders that contact a recipient regularly.
+
+### Legacy Endpoint
+- **Endpoint:** `GET /senders`
+- **Description:** Maintains the historical API contract while returning the new
+  data model.
+
+A complete specification including schemas and status codes can be found in
+`docs/openapi.yaml`.
 
 ---
 
@@ -210,11 +227,35 @@ CREATE TABLE public.anti (
 
 ---
 
+## Dependencies
+
+Core dependencies are listed in `requirements.txt` and include:
+
+- Flask 2.3.x
+- dateparser 1.2.x
+- psycopg2-binary 2.9.x
+- python-dotenv 1.0.x
+
+Install them with:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Documentation Assets
+
+- **OpenAPI specification:** [`docs/openapi.yaml`](docs/openapi.yaml)
+- **C4 Architecture Model:** [`docs/architecture/c4-model.md`](docs/architecture/c4-model.md)
+
+---
+
 ## Contribution
 
 1. Fork the repository.
 2. Create a new branch (`git checkout -b feature-branch`).
-3. Commit your changes (`git commit -m "Added a new feature"`).
+3. Commit your changes (`git commit -m "Add feature"`).
 4. Push to the branch (`git push origin feature-branch`).
 5. Open a Pull Request.
 
@@ -229,4 +270,3 @@ This project is licensed under the MIT License.
 ## Author
 
 Developed by **Alex Shaman**.
-

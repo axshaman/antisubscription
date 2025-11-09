@@ -1,153 +1,135 @@
-# from datetime import datetime
-import datetime
+"""Utilities to ingest messages from IMAP mailboxes."""
 
-from email.utils import parsedate_tz
-import dateparser
+from __future__ import annotations
 
-import imaplib
+import datetime as dt
 import email
+import logging
 import re
+from email.message import Message
+from email.utils import parsedate_tz
+from typing import Iterable, Sequence
 
+import dateparser
+import imaplib
 
-from libs.subscription import subscription
 from connect_db import add_to_base
-# USE IT IN CASE WITHOUT API
-# from libs.key_values_scan import keys_list
-# from config import MAIL_SERVICE, MAIL_LOGIN, MAIL_PASSWORD
-
-# You can setup any date for check
-TWO_YEARS_PERIOD_CHECK : datetime = datetime.datetime.now() - datetime.timedelta(days=2*365)
+from libs.subscription import subscription
 
 
-def get_data(MAIL_SERVICE, MAIL_LOGIN, MAIL_PASSWORD, keys_list) -> any:
-    #   --- Connection
-    mail = imaplib.IMAP4_SSL(MAIL_SERVICE)              # IMAP session with domain
-    mail.login(MAIL_LOGIN, MAIL_PASSWORD)                             # Login to account
-
-    # print(mail.list())                                      # tuple of All Folders on Mail Server
+LOGGER = logging.getLogger(__name__)
 
 
+def get_data(
+    mail_service: str,
+    mail_login: str,
+    mail_password: str,
+    keys_list: Sequence[str],
+    *,
+    lookback_days: int = 730,
+    max_messages: int | None = 200,
+) -> int:
+    """Fetch recent emails and persist subscription related messages.
 
-    #   --- Work with emails
-    # mail.select("You can choise any Mail Folder from mail.list()")
-    mail.select("inbox")                                  # tuple with status and quantity in List
-    result, data = mail.search(None, "ALL")               # tuple, status and list with qaunting of letters
-                                                          # from 'select' folder  
+    Parameters
+    ----------
+    mail_service:
+        IMAP server hostname.
+    mail_login:
+        Login name of the mailbox.
+    mail_password:
+        Password or application token.
+    keys_list:
+        Keywords used to detect subscription related content.
+    lookback_days:
+        How many days of history should be inspected.  Defaults to two years to
+        keep backwards compatibility with the original behaviour.
+    max_messages:
+        An optional hard limit for the number of e-mails to analyse.  This makes
+        the endpoint more predictable for very large inboxes.
 
-    numbers_mails : str = data[0].decode()               # String of all letter's numbers
-                                                         # decode it from binary
+    Returns
+    -------
+    int
+        The number of messages that were persisted to the database.
+    """
 
-    numbers_mails_list : list = numbers_mails.split()           # List of numbers (each is Sring)
-    # print(len(numbers_mails_list))                       # Letters quantity in 'ínbox' for cycling
-    
-    
-    # =================================================
-    # --- Main Cycle of letters iteration
-    # =================================================
+    mail = imaplib.IMAP4_SSL(mail_service)
+    try:
+        mail.login(mail_login, mail_password)
+        mail.select("INBOX")
 
-    for num in range(len(numbers_mails_list)):              # In range of letters quantity
-        id = len(numbers_mails_list) - (num + 1)
-        if id >= 1:
-            print("ID Main: ", id)
-            result, data = mail.fetch(str(id), "(RFC822)")      # tuple (status, [ Total Content ])
-            raw_data_of_mail = data[0][1].decode('latin-1')     # Try to solve Cirylic proplem      
-            
+        _, data = mail.search(None, "ALL")
+        numbers_mails = data[0].decode()
+        numbers_mails_list = numbers_mails.split()
 
-            #   --- Work with content of letter
-            msg : str = email.message_from_string(raw_data_of_mail)     # ?   
+        cutoff_date = dt.datetime.now() - dt.timedelta(days=lookback_days)
+        stored_messages = 0
 
-
-            # ----- Sending date -----
-            date_send =  (msg['Date'])                          # 'Tue, 29 Jun 2021 19:00:43 +0300'
-            tt : tuple = parsedate_tz(date_send)
-            try:
-                date_str : str = str(tt[0]) + ' ' + str(tt[1]) + ' ' + str(tt[2])       # Format date for PostgreSQL
-            except:
-                date_str : str = '2012 12 12'
-
-            current_mail_date : datetime = dateparser.parse(date_str)
-            
-            if current_mail_date > TWO_YEARS_PERIOD_CHECK:
-
-                data_dict : dict = raw_data_convert(msg, raw_data_of_mail, keys_list, date_str)  # Dict of all main data
-                # print(data_dict)
-                if data_dict['Subscription'] != 0:
-                    add_to_base(data_dict)                            # Send dict with data to Postgres
-            else:
-                pass
+        for counter, message_id in enumerate(reversed(numbers_mails_list), start=1):
+            if max_messages and counter > max_messages:
                 break
-        else:
-            pass
-            break                           # Send dict with data to Postgres
-        # ==============================================
-        # RawData -> Convert RD -> Dict of data -> to DB
-        # ==============================================
-        
-    return print('ok ?')
 
+            result, data = mail.fetch(message_id, "(RFC822)")
+            if result != "OK" or not data or not data[0]:
+                LOGGER.warning("Unable to fetch message %s: %s", message_id, result)
+                continue
 
-# 
-def raw_data_convert(msg, raw_data_of_mail, keys_list, date_str) -> dict:
-    # raw_data_of_mail = get_data()                       # OOC
-    #   --- Work with content of letter
-    msg : str = email.message_from_string(raw_data_of_mail)     # ?    
-    
-    sender : str =  (msg['From'])
-    index_of_finish = sender.find('<')          # Cut sender's name till '<'
-    name = sender[:index_of_finish]             # We don't Cut quotes, some data without quotes
+            raw_data = data[0][1].decode("latin-1", errors="ignore")
+            msg = email.message_from_string(raw_data)
+            parsed = parsedate_tz(msg.get("Date"))
+            if not parsed:
+                LOGGER.debug("Skipping message %s because the date header is missing", message_id)
+                continue
 
-    # ----- Sender Email -----
-    def name_email():                                             # We get email separated from sender
-        # reg_name = r"\"[\w\s\?@\?.]+"         
-        # reg_name = r"\w.*"         
-        reg_email = r"<.*?>"                                      # It's find any in <>
+            date_str = f"{parsed[0]} {parsed[1]} {parsed[2]}"
+            current_mail_date = dateparser.parse(date_str)
+            if not current_mail_date or current_mail_date < cutoff_date:
+                continue
+
+            data_dict = raw_data_convert(msg, raw_data, keys_list, date_str)
+            if data_dict["Subscription"]:
+                add_to_base(data_dict)
+                stored_messages += 1
+
+        return stored_messages
+    finally:
         try:
-            email : str = re.findall(reg_email, sender)[0]        # email from list
-            email = email[1:-1]                                   # Cut quotes from both sides
-            return email
-        except:
-            email = 'UnableTo@Read.Email'               # It's can't decode some data
-            return email
-
-    
-    
-    # ----- Recipient Email -----
-    recipient : str = msg['To']
+            mail.logout()
+        except Exception:
+            LOGGER.debug("Failed to close IMAP session cleanly")
 
 
-    # in case we haven't correct Reciptient
-    if hasattr(recipient, '__len__') and len(recipient) < 3:
-        recipient = 'not@found.net'
+def raw_data_convert(
+    msg: Message,
+    raw_data_of_mail: str,
+    keys_list: Iterable[str],
+    date_str: str,
+) -> dict:
+    sender = msg.get("From", "Unknown")
+    index_of_finish = sender.find("<")
+    name = sender[:index_of_finish] if index_of_finish > 0 else sender
 
+    def extract_email(value: str | None) -> str:
+        if not value:
+            return "not@found.net"
+        match = re.findall(r"<.*?>", value)
+        if match:
+            return match[0][1:-1]
+        return value
 
-    def recipient_email():                                   # It's start in 'return'
-        reg_email = r"<.*?>"                            # It's find any in <>
-        try:
-            email : str = re.findall(reg_email, recipient)[0]        # email from list
-            email = email[1:-1]                             # Cut quotes from both sides
-            return email
-        except:
-            return recipient
+    sender_email = extract_email(sender)
+    recipient_email = extract_email(msg.get("To"))
 
+    subscription_check = subscription(raw_data_of_mail, keys_list)
 
-    # Subscription check
-    subscription_check = subscription(
-                                        raw_data_of_mail,
-                                        keys_list
-                                    )
-
-    # print (msg.get_payload(decode=True))            
     return {
-        'Sender': name,
-        'Email': name_email(),
-        'Date': date_str,
-        'Recipient' : recipient_email(),
-        'Subscription' : subscription_check
-        }      
+        "Sender": name.strip() or sender_email,
+        "Email": sender_email,
+        "Date": date_str,
+        "Recipient": recipient_email,
+        "Subscription": subscription_check or 0,
+    }
 
 
-test = 'test'
-
-if __name__ == '__main__':
-    get_email_data = get_data(MAIL_SERVICE, MAIL_LOGIN, MAIL_PASSWORD, keys_list)
-    # result = raw_data_convert(get_email_data)
+__all__ = ["get_data", "raw_data_convert"]
